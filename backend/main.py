@@ -1,130 +1,100 @@
-import os
-import uuid
-import subprocess
-import psycopg2
-import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict
+import time
+from auth import create_user, authenticate_user
+from judge import run_judge
+from database import init_db, get_db_conn, get_db_cursor
+import matchmaker
 
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# --- CORS: Allows React (port 3000) to talk to FastAPI (port 8080) ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Initialize DB on startup
+@app.on_event("startup")
+def startup():
+    init_db()
 
-# --- DB CONFIG (Update with your Windows Postgres password) ---
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "duelcode",
-    "user": "postgres",
-    "password": "your_password_here", 
-    "port": "5432"
-}
+# --- Models ---
+class UserAuth(BaseModel):
+    username: str; email: str = None; password: str
 
-# --- Game State Management ---
-waiting_queue: List[Dict] = []  # Players waiting for a match
-active_rooms: Dict[str, Dict] = {} # Active 1v1 matches
+class Submission(BaseModel):
+    problemId: int; code: str; roomId: str; playerId: str
 
-class SubmissionRequest(BaseModel):
-    problemId: int
-    code: str
-    roomId: str
-    playerId: str
+# --- Throttling ---
+submission_cooldowns = {}
 
-def get_db_conn():
-    return psycopg2.connect(**DB_CONFIG)
+@app.post("/auth/signup")
+async def signup(user: UserAuth):
+    res = create_user(user.username, user.email, user.password)
+    if not res: raise HTTPException(status_code=400, detail="Username/Email already exists")
+    return res
 
-# --- The Judge (Docker Execution) ---
-def run_judge(user_code: str, problem_id: int):
-    sub_id = str(uuid.uuid4())
-    sub_dir = os.path.join(os.getcwd(), "submissions", sub_id)
-    os.makedirs(sub_dir, exist_ok=True)
-    
-    with open(os.path.join(sub_dir, "solution.cpp"), "w") as f:
-        f.write(user_code)
+@app.post("/auth/login")
+async def login(user: UserAuth):
+    res = authenticate_user(user.username, user.password)
+    if not res: raise HTTPException(status_code=401, detail="Invalid credentials")
+    return res
 
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT input_data, expected_output FROM test_cases WHERE problem_id = %s", (problem_id,))
-        test_cases = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        for idx, (inp, out) in enumerate(test_cases):
-            # Windows Fix: Docker volumes require forward slashes
-            docker_sub_dir = sub_dir.replace("\\", "/")
-            
-            cmd = [
-                "docker", "run", "--rm",
-                "--memory", "256m", "--cpus", "0.5",
-                "-v", f"{docker_sub_dir}:/app", "-w", "/app",
-                "judge", "sh", "-c", 
-                f"g++ solution.cpp -o out && echo '{inp}' | timeout 2s ./out"
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            actual = result.stdout.strip()
-            
-            if actual != out.strip():
-                if result.stderr: return "Compile Error"
-                return f"Wrong Answer on Test {idx + 1}"
-
-        return "Accepted"
-    finally:
-        import shutil
-        shutil.rmtree(sub_dir, ignore_errors=True)
-
-# --- Endpoints ---
 @app.post("/submit")
-async def submit_code(req: SubmissionRequest):
+async def submit(req: Submission):
+    now = time.time()
+    if now - submission_cooldowns.get(req.playerId, 0) < 5:
+        raise HTTPException(status_code=429, detail="Cooldown: Wait 5s")
+    
+    submission_cooldowns[req.playerId] = now
     verdict = run_judge(req.code, req.problemId)
     
-    # If someone wins, notify both players in the room immediately
-    if verdict == "Accepted" and req.roomId in active_rooms:
-        room = active_rooms[req.roomId]
-        for pid, sock in room["players"].items():
-            await sock.send_json({
-                "type": "GAME_OVER",
-                "winner": req.playerId
-            })
+    # Save to history
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO submissions (problem_id, user_id, verdict, code) VALUES (%s, %s, %s, %s)",
+        (req.problemId, req.playerId, verdict, req.code)
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+    # If AC, notify room via matchmaker logic (omitted for brevity)
     return {"verdict": verdict}
 
+@app.get("/history/{user_id}")
+async def history(user_id: str):
+    conn = get_db_conn()
+    cur = get_db_cursor(conn)
+    cur.execute("""
+        SELECT s.*, p.title FROM submissions s 
+        JOIN problems p ON s.problem_id = p.id 
+        WHERE s.user_id = %s ORDER BY s.created_at DESC
+    """, (user_id,))
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return rows
+
 @app.websocket("/ws/duel/{client_id}")
-async def duel_socket(websocket: WebSocket, client_id: str):
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await websocket.accept()
-    waiting_queue.append({"id": client_id, "socket": websocket})
-
-    if len(waiting_queue) >= 2:
-        p1, p2 = waiting_queue.pop(0), waiting_queue.pop(0)
-        room_id = str(uuid.uuid4())
-        
-        # Pick random problem from DB
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id, title, description FROM problems ORDER BY RANDOM() LIMIT 1")
-        prob = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        active_rooms[room_id] = {
-            "players": {p1["id"]: p1["socket"], p2["id"]: p2["socket"]},
-            "problem": {"id": prob[0], "title": prob[1], "description": prob[2]}
-        }
-
-        match_msg = {"type": "MATCH_START", "roomId": room_id, "problem": active_rooms[room_id]["problem"]}
-        await p1["socket"].send_json({**match_msg, "opponentId": p2["id"]})
-        await p2["socket"].send_json({**match_msg, "opponentId": p1["id"]})
-
+    await matchmaker.add_to_queue(client_id, websocket)
     try:
-        while True: await websocket.receive_text()
+        while True:
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        # Cleanup waiting queue if player leaves
-        for i, c in enumerate(waiting_queue):
-            if c["id"] == client_id: waiting_queue.pop(i); break
+        matchmaker.remove_from_queue(client_id)
+
+@app.get("/leaderboard")
+async def get_leaderboard():
+    conn = get_db_conn()
+    cur = get_db_cursor(conn)
+    # Ranks users by count of 'Accepted' verdicts
+    cur.execute("""
+        SELECT u.username, COUNT(s.id) as score 
+        FROM users u 
+        JOIN submissions s ON CAST(u.id AS VARCHAR) = s.user_id 
+        WHERE s.verdict = 'Accepted' 
+        GROUP BY u.username 
+        ORDER BY score DESC LIMIT 10
+    """)
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return rows

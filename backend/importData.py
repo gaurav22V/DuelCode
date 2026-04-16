@@ -7,7 +7,7 @@ DB_CONFIG = {
     "host": "localhost",
     "database": "duelcode",
     "user": "postgres",
-    "password": "your_password_here", # Update with your Windows Postgres password
+    "password": "pw123", 
     "port": "5432"
 }
 
