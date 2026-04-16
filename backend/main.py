@@ -20,7 +20,7 @@ class UserAuth(BaseModel):
     username: str; email: str = None; password: str
 
 class Submission(BaseModel):
-    problemId: int; code: str; roomId: str; playerId: str
+    problemId: str; code: str; roomId: str; playerId: str
 
 # --- Throttling ---
 submission_cooldowns = {}
@@ -44,19 +44,23 @@ async def submit(req: Submission):
         raise HTTPException(status_code=429, detail="Cooldown: Wait 5s")
     
     submission_cooldowns[req.playerId] = now
-    verdict = run_judge(req.code, req.problemId)
     
-    # Save to history
+    # 1. run_judge now needs to be able to fetch tests from the DB
+    verdict = await run_judge(req.code, req.problemId) 
+    
+    # 2. Save to history using our established DB connection
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO submissions (problem_id, user_id, verdict, code) VALUES (%s, %s, %s, %s)",
-        (req.problemId, req.playerId, verdict, req.code)
-    )
-    conn.commit()
-    cur.close(); conn.close()
+    try:
+        cur.execute(
+            "INSERT INTO submissions (problem_id, user_id, verdict, code) VALUES (%s, %s, %s, %s)",
+            (req.problemId, req.playerId, verdict, req.code)
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
-    # If AC, notify room via matchmaker logic (omitted for brevity)
     return {"verdict": verdict}
 
 @app.get("/history/{user_id}")

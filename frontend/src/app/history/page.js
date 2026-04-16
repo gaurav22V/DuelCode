@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import ThemeToggle from "../components/ThemeToggler";
+import ThemeToggle from "../../components/ThemeToggle";
 
 export default function HistoryPage() {
   const [history, setHistory] = useState([]);

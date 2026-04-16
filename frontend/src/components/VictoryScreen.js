@@ -1,3 +1,4 @@
+"use client";
 export default function VictoryScreen({ winner, player1Id, opponentId, onReset }) {
   const isWinner = winner === player1Id;
 
