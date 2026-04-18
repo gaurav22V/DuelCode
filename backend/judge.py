@@ -3,9 +3,13 @@ import tempfile
 import os
 import json
 import asyncpg
+from dotenv import load_dotenv
 
-# Use environment variable for production, fallback for local testing
-DB_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_LjtJg9rn7IVN@ep-rapid-haze-amyw2soc-pooler.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+load_dotenv()
+
+DB_URL = os.getenv("DATABASE_URL")
+if not DB_URL:
+    raise ValueError("CRITICAL ERROR: DATABASE_URL is not set. Check your .env file!")
 
 # --- 1. THE STANDARD TEST RUNNER (Against hidden DB cases) ---
 async def evaluate_code(user_code: str, problem_slug: str, is_submit: bool) -> dict:
