@@ -5,7 +5,7 @@ import { useSession } from 'next-auth/react';
 export default function ProfilePage() {
   const { data: session } = useSession();
   const [profileData, setProfileData] = useState(null);
-
+  const API_URL = process.env.NEXT_PUBLIC_API_URL;
   useEffect(() => {
     // Only fetch if we have a logged-in user
     if (session?.user?.email) {
@@ -13,7 +13,7 @@ export default function ProfilePage() {
       const emailPrefix = session.user.email.split('@')[0];
       const username = session.user.name?.replace(/\s+/g, '') || emailPrefix;
 
-      fetch(`http://localhost:8000/profile/${username}`)
+      fetch(`${API_URL}/profile/${username}`)
         .then(res => res.json())
         .then(data => {
           if (data.status === "success") {

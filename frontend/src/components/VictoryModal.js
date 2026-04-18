@@ -2,7 +2,6 @@ import React from 'react';
 import { Trophy } from 'lucide-react';
 
 export default function VictoryModal({ eloUpdate, onReturn }) {
-  // If there's no game over data, don't render anything
   if (!eloUpdate) return null;
 
   return (

@@ -2,7 +2,10 @@ import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL
+
 export const authOptions = {
+  
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID,
@@ -16,7 +19,7 @@ export const authOptions = {
       },
       async authorize(credentials) {
         try {
-          const res = await fetch("http://localhost:8000/auth/login", {
+          const res = await fetch(`${API_URL}/auth/login`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -37,20 +40,17 @@ export const authOptions = {
   ],
   session: { strategy: "jwt" },
   callbacks: {
-    // THIS IS THE MAGIC INTERCEPTOR
     async signIn({ user, account }) {
       if (account.provider === "google") {
         try {
-          const res = await fetch(`http://localhost:8000/auth/check-email?email=${user.email}`);
+          const res = await fetch(`${API_URL}/auth/check-email?email=${user.email}`);
           const data = await res.json();
 
           if (data.exists) {
-            // User already has an account. Swap Google's ID for their DuelCode username!
             user.id = data.username;
             user.name = data.username;
             return true; 
           } else {
-            // New user! Redirect them to choose a username.
             return `/complete-signup?email=${user.email}`;
           }
         } catch (error) {
@@ -58,7 +58,7 @@ export const authOptions = {
           return false;
         }
       }
-      return true; // Let Credentials logins pass through normally
+      return true;
     },
     async jwt({ token, user, account }) {
       if (user) {

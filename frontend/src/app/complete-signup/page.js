@@ -9,7 +9,7 @@ export default function CompleteSignupPage() {
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const router = useRouter();
-
+  const API_URL = process.env.NEXT_PUBLIC_API_URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const emailParam = params.get("email");
@@ -19,7 +19,7 @@ export default function CompleteSignupPage() {
 
   const handleComplete = async (e) => {
     e.preventDefault();
-    const res = await fetch("http://127.0.0.1:8000/auth/signup", {
+    const res = await fetch(`${API_URL}/auth/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, email })

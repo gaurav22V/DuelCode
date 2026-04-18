@@ -1,10 +1,11 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
-import VictoryModal from './VictoryModal.js';
 import { useSession, signIn } from 'next-auth/react';
 import { Play, Send, Search, Timer, Code2, Activity, Flag, Trophy, Loader2, XCircle } from 'lucide-react';
+import VictoryModal from './VictoryModal';
 
-const LOCAL_BACKEND = "localhost:8000"; 
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
 
 export default function ArenaClient() {
   const { data: session, status: sessionStatus } = useSession();
@@ -22,13 +23,15 @@ export default function ArenaClient() {
 
   const socket = useRef(null);
 
+  // User Sync Hook 
   useEffect(() => {
     const safeEmail = session?.user?.email || "guest@arena.com";
     const emailPrefix = safeEmail.split('@')[0];
     const username = session?.user?.name?.replace(/\s+/g, '') || emailPrefix;
       
     if (session?.user) {
-      fetch(`http://${LOCAL_BACKEND}/auth/signup`, {
+      // UPDATED FETCH URL
+      fetch(`${API_URL}/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: safeEmail, username: username })
@@ -36,12 +39,14 @@ export default function ArenaClient() {
     }
   }, [session]);
 
+  // Grace Period Hook
   useEffect(() => {
     let timer;
     if (graceTime > 0) timer = setTimeout(() => setGraceTime(graceTime - 1), 1000);
     return () => clearTimeout(timer);
   }, [graceTime]);
 
+  // Matchmaking Logic
   const startSearch = () => {
     if (!session?.user) return; 
     
@@ -53,7 +58,8 @@ export default function ArenaClient() {
     const emailPrefix = safeEmail.split('@')[0];
     const client_id = session?.user?.name?.replace(/\s+/g, '') || emailPrefix;
     
-    socket.current = new WebSocket(`ws://${LOCAL_BACKEND}/ws/duel/${client_id}`);
+    //  WEBSOCKET URL
+    socket.current = new WebSocket(`${WS_URL}/ws/duel/${client_id}`);
 
     socket.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -94,6 +100,7 @@ export default function ArenaClient() {
     socket.current.send(JSON.stringify({ type, code, match_id: matchId, problem_id: problem.problem_slug }));
   };
 
+  // UI
   if (sessionStatus === "loading") {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
@@ -119,7 +126,7 @@ export default function ArenaClient() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 relative z-10">
         <div className="p-4 bg-blue-500/10 rounded-full"><Code2 size={40} className="text-blue-500" /></div>
-        <h1 className="text-3xl font-black text-white">LOCAL ARENA</h1>
+        <h1 className="text-3xl font-black text-white">GLOBAL ARENA</h1>
         <button onClick={startSearch} className="relative z-50 cursor-pointer bg-blue-600 text-white px-10 py-4 rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center gap-2 active:scale-95 shadow-lg shadow-blue-500/20">
           <Search size={20} /> Start Matchmaking
         </button>
@@ -141,7 +148,7 @@ export default function ArenaClient() {
     <div className="grid grid-cols-12 gap-4 h-[calc(100vh-140px)] text-white">
       <div className="col-span-4 bg-gray-900 border border-gray-800 rounded-2xl p-6 overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
-            <span className="text-[10px] font-black bg-blue-500/20 text-blue-400 px-2 py-1 rounded">LOCAL DEV</span>
+            <span className="text-[10px] font-black bg-blue-500/20 text-blue-400 px-2 py-1 rounded">RANKED MATCH</span>
             {graceTime && <div className="text-red-500 font-bold flex items-center gap-2 animate-pulse"><Timer size={18}/> {graceTime}s</div>}
         </div>
         <h2 className="text-xl font-black mb-4">{problem?.title}</h2>
@@ -161,7 +168,7 @@ export default function ArenaClient() {
         </div>
 
         <div className="bg-gray-900 p-4 rounded-2xl border border-gray-800 flex items-center gap-4">
-          <div className="flex-grow bg-black p-4 rounded-xl border border-gray-800 min-h-[60px] font-mono text-xs">
+          <div className="flex-grow bg-black p-4 rounded-xl border border-gray-800 min-h-[60px] font-mono text-xs flex items-center">
               {isProcessing ? <p className="text-blue-400 animate-pulse">Running sandbox...</p> : 
                verdict ? <div>
                   <p className={`font-bold ${verdict.status === "Accepted" ? "text-green-500" : "text-red-500"}`}>{verdict.status}</p>
@@ -185,6 +192,7 @@ export default function ArenaClient() {
         eloUpdate={eloUpdate} 
         onReturn={() => window.location.reload()} 
       />
+
     </div>
   );
 }

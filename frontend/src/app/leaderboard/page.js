@@ -3,9 +3,9 @@ import { useEffect, useState } from 'react';
 
 export default function Leaderboard() {
     const [players, setPlayers] = useState([]);
-
+    const API_URL = process.env.NEXT_PUBLIC_API_URL;
     useEffect(() => {
-        fetch('http://localhost:8000/leaderboard')
+        fetch('${API_URL}/leaderboard')
             .then(res => res.json())
             .then(data => setPlayers(data.leaderboard))
             .catch(err => console.error("Failed to fetch leaderboard", err));

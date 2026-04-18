@@ -4,8 +4,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { UserPlus, Mail, User, ShieldCheck, ArrowLeft } from 'lucide-react';
 
-// REPLACE WITH YOUR RENDER URL
-const BACKEND_URL = "https://duelcode-backend.onrender.com";
+const API_URL = process.env.NEXT_PUBLIC_API_URL
 
 export default function SignupPage() {
   const [formData, setFormData] = useState({ email: '', username: '' });
@@ -19,7 +18,7 @@ export default function SignupPage() {
     setStatus({ type: '', msg: '' });
 
     try {
-      const res = await fetch(`${BACKEND_URL}/auth/signup`, {
+      const res = await fetch(`${API_URL}/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
