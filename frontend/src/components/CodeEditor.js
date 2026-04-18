@@ -1,21 +1,24 @@
 "use client";
-import Editor from "@monaco-editor/react";
+import dynamic from "next/dynamic";
 
-export default function CodeEditor({ code, onChange, theme = "vs-dark" }) {
+const Editor = dynamic(() => import("@monaco-editor/react"), { 
+  ssr: false,
+  loading: () => <div className="h-full w-full bg-gray-900 animate-pulse rounded-xl"></div>
+});
+
+export default function CodeEditor({ code, setCode, language = "cpp" }) {
   return (
-    <div className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 shadow-2xl">
-      <Editor
-        height="60vh"
-        defaultLanguage="cpp"
-        value={code}
-        theme={theme}
-        onChange={onChange}
-        options={{
-          fontSize: 16,
+    <div className="h-full w-full rounded-xl overflow-hidden border border-gray-300 dark:border-gray-800 shadow-inner">
+      <Editor 
+        height="100%" 
+        defaultLanguage={language} 
+        theme="vs-dark" 
+        value={code} 
+        onChange={(val) => setCode(val || "")} 
+        options={{ 
+          fontSize: 16, 
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
-          automaticLayout: true,
-          padding: { top: 16 },
         }}
       />
     </div>

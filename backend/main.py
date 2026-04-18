@@ -1,104 +1,79 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import time
-from auth import create_user, authenticate_user
-from judge import run_judge
-from database import init_db, get_db_conn, get_db_cursor
-import matchmaker
+import asyncpg
+import os
+import json
+from matchmaker import Matchmaker
+from judge import evaluate_code, evaluate_custom
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Initialize DB on startup
-@app.on_event("startup")
-def startup():
-    init_db()
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:pw123@localhost:5432/duelcode")
+mm = Matchmaker() # Global instance of your game engine
 
-# --- Models ---
-class UserAuth(BaseModel):
-    username: str; email: str = None; password: str
-
-class Submission(BaseModel):
-    problemId: str; code: str; roomId: str; playerId: str
-
-# --- Throttling ---
-submission_cooldowns = {}
-
+# --- AUTH & API ROUTES ---
 @app.post("/auth/signup")
-async def signup(user: UserAuth):
-    res = create_user(user.username, user.email, user.password)
-    if not res: raise HTTPException(status_code=400, detail="Username/Email already exists")
-    return res
-
-@app.post("/auth/login")
-async def login(user: UserAuth):
-    res = authenticate_user(user.username, user.password)
-    if not res: raise HTTPException(status_code=401, detail="Invalid credentials")
-    return res
-
-@app.post("/submit")
-async def submit(req: Submission):
-    now = time.time()
-    if now - submission_cooldowns.get(req.playerId, 0) < 5:
-        raise HTTPException(status_code=429, detail="Cooldown: Wait 5s")
-    
-    submission_cooldowns[req.playerId] = now
-    
-    # 1. run_judge now needs to be able to fetch tests from the DB
-    verdict = await run_judge(req.code, req.problemId) 
-    
-    # 2. Save to history using our established DB connection
-    conn = get_db_conn()
-    cur = conn.cursor()
+async def signup(request: Request):
+    data = await request.json()
+    conn = await asyncpg.connect(DATABASE_URL)
     try:
-        cur.execute(
-            "INSERT INTO submissions (problem_id, user_id, verdict, code) VALUES (%s, %s, %s, %s)",
-            (req.problemId, req.playerId, verdict, req.code)
-        )
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-
-    return {"verdict": verdict}
-
-@app.get("/history/{user_id}")
-async def history(user_id: str):
-    conn = get_db_conn()
-    cur = get_db_cursor(conn)
-    cur.execute("""
-        SELECT s.*, p.title FROM submissions s 
-        JOIN problems p ON s.problem_id = p.id 
-        WHERE s.user_id = %s ORDER BY s.created_at DESC
-    """, (user_id,))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return rows
-
-@app.websocket("/ws/duel/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    await websocket.accept()
-    await matchmaker.add_to_queue(client_id, websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        matchmaker.remove_from_queue(client_id)
+        await conn.execute("INSERT INTO users (email, username, elo) VALUES ($1, $2, 1200)", data['email'], data['username'])
+        return {"status": "success"}
+    except: return {"status": "error", "message": "User exists"}
+    finally: await conn.close()
 
 @app.get("/leaderboard")
 async def get_leaderboard():
-    conn = get_db_conn()
-    cur = get_db_cursor(conn)
-    # Ranks users by count of 'Accepted' verdicts
-    cur.execute("""
-        SELECT u.username, COUNT(s.id) as score 
-        FROM users u 
-        JOIN submissions s ON CAST(u.id AS VARCHAR) = s.user_id 
-        WHERE s.verdict = 'Accepted' 
-        GROUP BY u.username 
-        ORDER BY score DESC LIMIT 10
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return rows
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch("SELECT username, elo FROM users ORDER BY elo DESC LIMIT 10")
+    await conn.close()
+    return {"leaderboard": [dict(r) for r in rows]}
+
+@app.get("/profile/{username}")
+async def get_profile(username: str):
+    conn = await asyncpg.connect(DATABASE_URL)
+    user = await conn.fetchrow("SELECT username, elo, email FROM users WHERE username = $1", username)
+    if not user: return {"status": "error"}
+    history = await conn.fetch("SELECT opponent, result, elo_change, played_at FROM match_history WHERE username = $1 ORDER BY played_at DESC LIMIT 10", username)
+    await conn.close()
+    return {"status": "success", "user": dict(user), "history": [dict(h) for h in history]}
+
+# --- THE WEBSOCKET GATEWAY ---
+@app.websocket("/ws/duel/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    # 1. Get user's current Elo from DB for matchmaking
+    conn = await asyncpg.connect(DATABASE_URL)
+    user_elo = await conn.fetchval("SELECT elo FROM users WHERE username = $1", client_id) or 1200
+    await conn.close()
+
+    # 2. Join the queue
+    await mm.connect(client_id, websocket, user_elo)
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            m_id = data.get("match_id")
+
+            # Route 1: Custom Run (Doesn't affect match)
+            if data['type'] == "RUN_CUSTOM":
+                verdict = await evaluate_custom(data['code'], data['custom_input'])
+                await websocket.send_json({"type": "VERDICT", **verdict})
+
+            # Route 2: Match Actions (Run/Submit)
+            elif data['type'] in ["RUN_CODE", "SUBMIT_CODE"]:
+                verdict = await evaluate_code(data['code'], data['problem_id'], True)
+                await websocket.send_json({"type": "VERDICT", **verdict})
+                
+                # Update match state and telemetry
+                if m_id:
+                    await mm.handle_telemetry(m_id, client_id, data['type'], verdict['status'])
+                    if data['type'] == "SUBMIT_CODE" and verdict['status'] == "Accepted":
+                        await mm.handle_submission(m_id, client_id, verdict)
+            
+            # Route 3: Surrender
+            elif data['type'] == "SURRENDER" and m_id:
+                await mm.evaluate_winner(m_id, forfeit_loser=client_id)
+
+    except WebSocketDisconnect:
+        mm.disconnect(client_id)

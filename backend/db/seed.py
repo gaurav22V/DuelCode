@@ -1,80 +1,106 @@
-import os
-import json
 import psycopg2
-from psycopg2.extras import Json
+import json
+import os
 
-# DB Credentials
-DB_CONFIG = {
-    "dbname": "duelcode",
-    "user": "postgres",
-    "password": "pw123",
-    "host": "127.0.0.1",
-    "port": "5432"
-}
+DB_URL = "postgresql://neondb_owner:npg_LjtJg9rn7IVN@ep-rapid-haze-amyw2soc-pooler.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
-# Path Logic: seed.py is in backend/db/. Project root is two levels up.
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PROBLEMS_DIR = os.path.join(BASE_DIR, "problems")
+def setup_and_seed():
+    try:
+        print("🔗 Connecting to cloud database...")
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
 
-def populate_problems():
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
-    
-    # Iterate through all folders in /problems/
-    for folder_name in os.listdir(PROBLEMS_DIR):
-        folder_path = os.path.join(PROBLEMS_DIR, folder_name)
-        if not os.path.isdir(folder_path): continue
+        cur.execute("""
+            DROP TABLE IF EXISTS match_history CASCADE;
+            DROP TABLE IF EXISTS test_cases CASCADE;
+            DROP TABLE IF EXISTS problems CASCADE;
+            DROP TABLE IF EXISTS users CASCADE;
 
-        try:
-            # 1. Read metadata.json (ID, Title, Starter Code)
-            with open(os.path.join(folder_path, "metadata.json"), "r") as f:
-                meta = json.load(f)
+            CREATE TABLE users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                username TEXT UNIQUE NOT NULL,
+                elo INTEGER DEFAULT 1200
+            );
 
-            # 2. Read statement.md (Problem Description)
-            with open(os.path.join(folder_path, "statement.md"), "r") as f:
-                description = f.read()
+            CREATE TABLE problems (
+                id SERIAL PRIMARY KEY,
+                problem_slug TEXT UNIQUE,
+                title TEXT NOT NULL,
+                description TEXT,
+                starter_code JSONB
+            );
 
-            # 3. Read official-tests.json (Judge Test Suite)
-            with open(os.path.join(folder_path, "official-tests.json"), "r") as f:
-                official_tests = json.load(f)
+            CREATE TABLE test_cases (
+                id SERIAL PRIMARY KEY,
+                problem_id INTEGER REFERENCES problems(id) ON DELETE CASCADE,
+                input_data JSONB,
+                expected_output JSONB
+            );
 
-            # 4. Read Marker.java (Reference Solution)
-            with open(os.path.join(folder_path, "Marker.java"), "r") as f:
-                marker_code = f.read()
+            CREATE TABLE match_history (
+                id SERIAL PRIMARY KEY,
+                username TEXT REFERENCES users(username) ON DELETE CASCADE,
+                opponent TEXT,
+                result TEXT,
+                elo_change TEXT,
+                played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
 
-            # UPSERT: Insert or Update if ID exists
-            cur.execute("""
-                INSERT INTO problems (id, title, description, difficulty, category, starter_code, test_cases, marker_code, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    starter_code = EXCLUDED.starter_code,
-                    test_cases = EXCLUDED.test_cases,
-                    marker_code = EXCLUDED.marker_code;
-            """, (
-                meta['id'],
-                meta['title'],
-                description,
-                meta['difficulty'],
-                meta['category'],
-                Json(meta['starterCode']),
-                Json(official_tests),
-                marker_code,
-                Json({
-                    "functionName": meta['functionName'],
-                    "params": meta['params'],
-                    "outputType": meta['outputType']
-                })
-            ))
-            print(f"✅ Seeded: {meta['title']}")
+        print("👤 Seeding Dummy Leaderboard Users...")
+        dummy_users = [
+            ("boss@duelcode.com", "Faker", 2500),
+            ("tourist@duelcode.com", "Tourist", 2450),
+            ("gaurav@duelcode.com", "Gaurav_Pro", 1800),
+            ("noob@duelcode.com", "CodeNoob", 1100)
+        ]
+        for email, name, elo in dummy_users:
+            cur.execute("INSERT INTO users (email, username, elo) VALUES (%s, %s, %s)", (email, name, elo))
 
-        except Exception as e:
-            print(f"❌ Failed to seed {folder_name}: {e}")
+        print("🌱 Seeding Multi-Problem Set...")
+        problems = [
+            {
+                "slug": "add-two-numbers",
+                "title": "Add Two Numbers",
+                "description": "Given two integers a and b, return their sum.",
+                "starter": {"cpp": "class Solution {\npublic:\n    int solve(int a, int b) {\n        return 0;\n    }\n};"},
+                "tests": [{"inp": {"a": 5, "b": 3}, "out": 8}, {"inp": {"a": -2, "b": 2}, "out": 0}]
+            },
+            {
+                "slug": "find-max",
+                "title": "Find the Maximum",
+                "description": "Given two integers a and b, return the strictly greater value. If equal, return a.",
+                "starter": {"cpp": "class Solution {\npublic:\n    int solve(int a, int b) {\n        return 0;\n    }\n};"},
+                "tests": [{"inp": {"a": 10, "b": 20}, "out": 20}, {"inp": {"a": 5, "b": 5}, "out": 5}]
+            },
+            {
+                "slug": "multiply-numbers",
+                "title": "Product of Two",
+                "description": "Given integers a and b, return their product.",
+                "starter": {"cpp": "class Solution {\npublic:\n    int solve(int a, int b) {\n        return 0;\n    }\n};"},
+                "tests": [{"inp": {"a": 5, "b": 5}, "out": 25}, {"inp": {"a": 10, "b": 0}, "out": 0}]
+            }
+        ]
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        for p in problems:
+            cur.execute(
+                "INSERT INTO problems (problem_slug, title, description, starter_code) VALUES (%s, %s, %s, %s) RETURNING id",
+                (p["slug"], p["title"], p["description"], json.dumps(p["starter"]))
+            )
+            p_id = cur.fetchone()[0]
+            for t in p["tests"]:
+                cur.execute(
+                    "INSERT INTO test_cases (problem_id, input_data, expected_output) VALUES (%s, %s, %s)",
+                    (p_id, json.dumps(t["inp"]), json.dumps(t["out"]))
+                )
+
+        conn.commit()
+        print("✅ Cloud Database successfully seeded for deployment!")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        if conn: conn.close()
 
 if __name__ == "__main__":
-    populate_problems()
+    setup_and_seed()

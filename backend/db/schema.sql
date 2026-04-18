@@ -1,17 +1,19 @@
--- Connect to postgres as superuser: sudo -u postgres psql
-CREATE USER duel_admin WITH PASSWORD 'your_password';
-CREATE DATABASE duelcode_db OWNER duel_admin;
-GRANT ALL PRIVILEGES ON DATABASE duelcode_db TO duel_admin;
+DROP TABLE IF EXISTS test_cases CASCADE;
+DROP TABLE IF EXISTS problems CASCADE;
 
--- Connect to the new db: \c duelcode_db
-CREATE TABLE IF NOT EXISTS problems (
-    id TEXT PRIMARY KEY,
+CREATE TABLE problems (
+    id SERIAL PRIMARY KEY,
+    problem_slug TEXT UNIQUE,
     title TEXT NOT NULL,
     description TEXT,
-    difficulty TEXT,
-    category TEXT,
-    starter_code JSONB, -- Stores the language map (C++, Java, etc.)
-    test_cases JSONB,   -- Stores official-tests.json
-    marker_code TEXT,   -- Stores the content of Marker.java
-    metadata JSONB      -- Stores params, outputType, and functionName
+    starter_code JSONB
 );
+
+CREATE TABLE test_cases (
+    id SERIAL PRIMARY KEY,
+    problem_id INTEGER REFERENCES problems(id) ON DELETE CASCADE,
+    input_data JSONB,
+    expected_output JSONB
+);
+
+COMMIT;

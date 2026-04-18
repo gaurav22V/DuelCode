@@ -1,19 +1,20 @@
 "use client";
-import { DiffEditor } from "@monaco-editor/react";
+import dynamic from "next/dynamic";
 
-export default function DiffView({ oldCode, newCode }) {
+const DiffEditor = dynamic(() => import("@monaco-editor/react").then(mod => mod.DiffEditor), { 
+  ssr: false 
+});
+
+export default function DiffView({ original, modified }) {
   return (
-    <div className="h-[500px] w-full rounded-xl overflow-hidden border border-gray-700">
+    <div className="h-64 w-full rounded-xl overflow-hidden border border-gray-300 dark:border-gray-800">
       <DiffEditor
-        original={oldCode} // Your Code
-        modified={newCode} // Winner's Code
-        language="cpp"
+        height="100%"
+        original={original}
+        modified={modified}
+        language="text"
         theme="vs-dark"
-        options={{
-          renderSideBySide: true,
-          readOnly: true,
-          minimap: { enabled: false },
-        }}
+        options={{ readOnly: true, renderSideBySide: true }}
       />
     </div>
   );
